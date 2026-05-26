@@ -45,6 +45,31 @@ datasets/your_dataset/
 
 数据集、训练权重、日志、推理输入和推理结果都不会直接提交到 GitHub，相关目录已经在 `.gitignore` 中排除。
 
+本项目使用的苹果/橘子数据集已经作为 Release 附件上传：
+
+```text
+https://github.com/cty076/cyclegan-apple-orange/releases/tag/apple-orange-bs1-e200
+```
+
+数据集压缩包名称：
+
+```text
+apple_orange_user_dataset.zip
+```
+
+解压后请放到：
+
+```text
+datasets/apple_orange_user/
+```
+
+数据集划分为：
+
+- `trainA`：365 张苹果训练图。
+- `trainB`：361 张橘子训练图。
+- `testA`：20 张苹果测试图。
+- `testB`：20 张橘子测试图。
+
 ## 苹果橘子实验
 
 如果使用本项目中的本地菜单流程，需要将原始图片目录放在仓库上级工作区中：
