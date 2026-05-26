@@ -3,6 +3,11 @@ debug*
 datasets/
 checkpoints/
 results/
+logs/
+infer_inputs/
+server_inference_*/
+*.zip
+*.pth
 build/
 dist/
 *.png

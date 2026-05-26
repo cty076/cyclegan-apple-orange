@@ -11,6 +11,8 @@ from torch.optim import lr_scheduler
 
 
 class Identity(nn.Module):
+    """一个什么都不做的层，用于 norm_type='none' 时占位。"""
+
     def forward(self, x):
         return x
 
@@ -24,10 +26,13 @@ def get_norm_layer(norm_type="instance"):
     For BatchNorm, we use learnable affine parameters and track running statistics (mean/stddev).
     For InstanceNorm, we do not use learnable affine parameters. We do not track running statistics.
     """
+    # BatchNorm：按 batch 统计均值/方差，带可学习 affine 参数。
     if norm_type == "batch":
         norm_layer = functools.partial(nn.BatchNorm2d, affine=True, track_running_stats=True)
+    # SyncBatchNorm：分布式训练时跨 GPU 同步统计量。
     elif norm_type == "syncbatch":
         norm_layer = functools.partial(nn.SyncBatchNorm, affine=True, track_running_stats=True)
+    # InstanceNorm：每张图片、每个通道独立归一化，图像风格迁移/CycleGAN 常用。
     elif norm_type == "instance":
         norm_layer = functools.partial(nn.InstanceNorm2d, affine=False, track_running_stats=False)
     elif norm_type == "none":
@@ -56,6 +61,7 @@ def get_scheduler(optimizer, opt):
     if opt.lr_policy == "linear":
 
         def lambda_rule(epoch):
+            # 前 n_epochs 保持学习率不变，之后 n_epochs_decay 内线性衰减到 0。
             lr_l = 1.0 - max(0, epoch + opt.epoch_count - opt.n_epochs) / float(opt.n_epochs_decay + 1)
             return lr_l
 
@@ -79,13 +85,14 @@ def init_weights(net, init_type="normal", init_gain=0.02):
         init_type (str) -- the name of an initialization method: normal | xavier | kaiming | orthogonal
         init_gain (float)    -- scaling factor for normal, xavier and orthogonal.
 
-    We use 'normal' in the original pix2pix and CycleGAN paper. But xavier and kaiming might
+    CycleGAN uses 'normal' initialization by default. Xavier and kaiming might
     work better for some applications. Feel free to try yourself.
     """
 
     def init_func(m):  # define the initialization function
         classname = m.__class__.__name__
         if hasattr(m, "weight") and (classname.find("Conv") != -1 or classname.find("Linear") != -1):
+            # 只初始化卷积层和全连接层的 weight；不同 init_type 对应不同初始化分布。
             if init_type == "normal":
                 init.normal_(m.weight.data, 0.0, init_gain)
             elif init_type == "xavier":
@@ -97,8 +104,10 @@ def init_weights(net, init_type="normal", init_gain=0.02):
             else:
                 raise NotImplementedError("initialization method [%s] is not implemented" % init_type)
             if hasattr(m, "bias") and m.bias is not None:
+                # bias 一律初始化为 0。
                 init.constant_(m.bias.data, 0.0)
         elif classname.find("BatchNorm2d") != -1:  # BatchNorm Layer's weight is not a matrix; only normal distribution applies.
+            # BatchNorm 的缩放参数初始化到 1 附近，偏置初始化为 0。
             init.normal_(m.weight.data, 1.0, init_gain)
             init.constant_(m.bias.data, 0.0)
 
@@ -119,10 +128,12 @@ def init_net(net, init_type="normal", init_gain=0.02):
 
     if torch.cuda.is_available():
         if "LOCAL_RANK" in os.environ:
+            # DDP 场景下，每个进程绑定自己的本地 GPU。
             local_rank = int(os.environ["LOCAL_RANK"])
             net.to(local_rank)
             print(f"Initialized with device cuda:{local_rank}")
         else:
+            # 单 GPU/普通 CUDA 场景默认放到 cuda:0。
             net.to(0)
             print("Initialized with device cuda:0")
     init_weights(net, init_type, init_gain=init_gain)
@@ -145,15 +156,20 @@ def define_G(input_nc, output_nc, ngf, netG, norm="batch", use_dropout=False, in
     Returns a generator
     """
     net = None
+    # 先根据字符串创建归一化层工厂，后续网络内部会反复调用 norm_layer(channels)。
     norm_layer = get_norm_layer(norm_type=norm)
 
     if netG == "resnet_9blocks":
+        # 论文中 256x256 或更高分辨率常用 9 个 ResNet block。
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=9)
     elif netG == "resnet_6blocks":
+        # 128x128 图像常用 6 个 ResNet block。
         net = ResnetGenerator(input_nc, output_nc, ngf, norm_layer=norm_layer, use_dropout=use_dropout, n_blocks=6)
     elif netG == "unet_128":
+        # U-Net 生成器，7 次下采样可把 128x128 压到 1x1 bottleneck。
         net = UnetGenerator(input_nc, output_nc, 7, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     elif netG == "unet_256":
+        # U-Net 生成器，8 次下采样可把 256x256 压到 1x1 bottleneck。
         net = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout)
     else:
         raise NotImplementedError("Generator model name [%s] is not recognized" % netG)
@@ -175,7 +191,7 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
     Returns a discriminator
 
     Our current implementation provides three types of discriminators:
-        [basic]: 'PatchGAN' classifier described in the original pix2pix paper.
+        [basic]: 70x70 PatchGAN classifier.
         It can classify whether 70×70 overlapping patches are real or fake.
         Such a patch-level discriminator architecture has fewer parameters
         than a full-image discriminator and can work on arbitrarily-sized images
@@ -190,13 +206,17 @@ def define_D(input_nc, ndf, netD, n_layers_D=3, norm="batch", init_type="normal"
     The discriminator has been initialized by <init_net>. It uses Leakly RELU for non-linearity.
     """
     net = None
+    # 判别器同样使用命令行选择的归一化层。
     norm_layer = get_norm_layer(norm_type=norm)
 
     if netD == "basic":  # default PatchGAN classifier
+        # basic 就是论文常用的 70x70 PatchGAN，n_layers=3。
         net = NLayerDiscriminator(input_nc, ndf, n_layers=3, norm_layer=norm_layer)
     elif netD == "n_layers":  # more options
+        # n_layers 允许手动指定 PatchGAN 的卷积层数。
         net = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer)
     elif netD == "pixel":  # classify if each pixel is real or fake
+        # pixel 判别器只看 1x1 像素，不建模空间纹理关系。
         net = PixelDiscriminator(input_nc, ndf, norm_layer=norm_layer)
     else:
         raise NotImplementedError("Discriminator model name [%s] is not recognized" % netD)
@@ -225,14 +245,19 @@ class GANLoss(nn.Module):
         LSGAN needs no sigmoid. vanilla GANs will handle it with BCEWithLogitsLoss.
         """
         super(GANLoss, self).__init__()
+        # register_buffer 注册的是“随模型移动设备、但不参与训练”的张量。
+        # 这里保存真/假标签值，避免每次手动创建标量。
         self.register_buffer("real_label", torch.tensor(target_real_label))
         self.register_buffer("fake_label", torch.tensor(target_fake_label))
         self.gan_mode = gan_mode
         if gan_mode == "lsgan":
+            # LSGAN 使用均方误差：真实输出接近 1，假输出接近 0。
             self.loss = nn.MSELoss()
         elif gan_mode == "vanilla":
+            # vanilla GAN 使用 BCEWithLogitsLoss，内部包含 sigmoid + BCE，更数值稳定。
             self.loss = nn.BCEWithLogitsLoss()
         elif gan_mode in ["wgangp"]:
+            # WGAN-GP 的 loss 不需要固定标签张量。
             self.loss = None
         else:
             raise NotImplementedError("gan mode %s not implemented" % gan_mode)
@@ -252,6 +277,7 @@ class GANLoss(nn.Module):
             target_tensor = self.real_label
         else:
             target_tensor = self.fake_label
+        # PatchGAN 判别器输出通常是 N x 1 x H' x W'，标签需要扩展到相同形状。
         return target_tensor.expand_as(prediction)
 
     def __call__(self, prediction, target_is_real):
@@ -268,6 +294,8 @@ class GANLoss(nn.Module):
             target_tensor = self.get_target_tensor(prediction, target_is_real)
             loss = self.loss(prediction, target_tensor)
         elif self.gan_mode == "wgangp":
+            # WGAN 中真实样本希望 prediction.mean() 越大越好；
+            # 用最小化 loss 表达时，真实项取负号，假样本项取正号。
             if target_is_real:
                 loss = -prediction.mean()
             else:
@@ -295,6 +323,7 @@ def cal_gradient_penalty(netD, real_data, fake_data, device, type="mixed", const
         elif type == "fake":
             interpolatesv = fake_data
         elif type == "mixed":
+            # 在真实图和假图之间随机插值，WGAN-GP 通常在这些插值点上约束梯度范数。
             alpha = torch.rand(real_data.shape[0], 1, device=device)
             alpha = alpha.expand(real_data.shape[0], real_data.nelement() // real_data.shape[0]).contiguous().view(*real_data.shape)
             interpolatesv = alpha * real_data + ((1 - alpha) * fake_data)
@@ -302,8 +331,10 @@ def cal_gradient_penalty(netD, real_data, fake_data, device, type="mixed", const
             raise NotImplementedError(f"{type} not implemented")
         interpolatesv.requires_grad_(True)
         disc_interpolates = netD(interpolatesv)
+        # 计算 D(interpolates) 对 interpolates 的梯度，用于梯度惩罚。
         gradients = torch.autograd.grad(outputs=disc_interpolates, inputs=interpolatesv, grad_outputs=torch.ones(disc_interpolates.size()).to(device), create_graph=True, retain_graph=True, only_inputs=True)
         gradients = gradients[0].view(real_data.size(0), -1)  # flat the data
+        # 惩罚梯度 L2 范数偏离 constant（默认 1）的程度。
         gradient_penalty = (((gradients + 1e-16).norm(2, dim=1) - constant) ** 2).mean() * lambda_gp  # added eps
         return gradient_penalty, gradients
     else:
@@ -331,25 +362,32 @@ class ResnetGenerator(nn.Module):
         assert n_blocks >= 0
         super(ResnetGenerator, self).__init__()
         if type(norm_layer) == functools.partial:
+            # InstanceNorm 默认没有 affine 参数，因此卷积层保留 bias；BatchNorm 有 affine 参数时通常不需要 bias。
             use_bias = norm_layer.func == nn.InstanceNorm2d
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
 
+        # 开头用 reflection padding + 7x7 卷积，扩大感受野并减少边缘伪影。
+        # 输入形状通常是 [N, input_nc, H, W]，输出通道变为 ngf。
         model = [nn.ReflectionPad2d(3), nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0, bias=use_bias), norm_layer(ngf), nn.ReLU(True)]
 
         n_downsampling = 2
         for i in range(n_downsampling):  # add downsampling layers
+            # 两次 stride=2 卷积做下采样：H,W 每次减半，通道数每次翻倍。
             mult = 2**i
             model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1, bias=use_bias), norm_layer(ngf * mult * 2), nn.ReLU(True)]
 
         mult = 2**n_downsampling
         for i in range(n_blocks):  # add ResNet blocks
 
+            # 中间的残差块在低分辨率特征图上做内容/风格转换，不改变特征图尺寸和通道数。
             model += [ResnetBlock(ngf * mult, padding_type=padding_type, norm_layer=norm_layer, use_dropout=use_dropout, use_bias=use_bias)]
 
         for i in range(n_downsampling):  # add upsampling layers
+            # 两次反卷积上采样：H,W 每次扩大 2 倍，通道数每次减半。
             mult = 2 ** (n_downsampling - i)
             model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=2, padding=1, output_padding=1, bias=use_bias), norm_layer(int(ngf * mult / 2)), nn.ReLU(True)]
+        # 结尾映射回 output_nc 通道，并用 Tanh 输出到 [-1, 1]，匹配图像预处理归一化范围。
         model += [nn.ReflectionPad2d(3)]
         model += [nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0)]
         model += [nn.Tanh()]
@@ -390,6 +428,7 @@ class ResnetBlock(nn.Module):
         conv_block = []
         p = 0
         if padding_type == "reflect":
+            # 反射 padding 常用于图像生成，边缘比 zero padding 更自然。
             conv_block += [nn.ReflectionPad2d(1)]
         elif padding_type == "replicate":
             conv_block += [nn.ReplicationPad2d(1)]
@@ -398,6 +437,7 @@ class ResnetBlock(nn.Module):
         else:
             raise NotImplementedError("padding [%s] is not implemented" % padding_type)
 
+        # 残差块第一层：Conv -> Norm -> ReLU，可选 Dropout。
         conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), norm_layer(dim), nn.ReLU(True)]
         if use_dropout:
             conv_block += [nn.Dropout(0.5)]
@@ -411,12 +451,14 @@ class ResnetBlock(nn.Module):
             p = 1
         else:
             raise NotImplementedError("padding [%s] is not implemented" % padding_type)
+        # 残差块第二层：Conv -> Norm，不加 ReLU；ReLU 的非线性已经在第一层提供。
         conv_block += [nn.Conv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), norm_layer(dim)]
 
         return nn.Sequential(*conv_block)
 
     def forward(self, x):
         """Forward function (with skip connections)"""
+        # 残差连接：输出 = 输入 + 卷积块结果，有助于训练更深的生成器。
         out = x + self.conv_block(x)  # add skip connections
         return out
 
@@ -439,10 +481,13 @@ class UnetGenerator(nn.Module):
         """
         super(UnetGenerator, self).__init__()
         # construct unet structure
+        # U-Net 是从最内层 bottleneck 开始，一层一层向外包起来构造的递归结构。
         unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)  # add the innermost layer
         for i in range(num_downs - 5):  # add intermediate layers with ngf * 8 filters
+            # 中间层保持 ngf*8 通道，可选 dropout。
             unet_block = UnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer, use_dropout=use_dropout)
         # gradually reduce the number of filters from ngf * 8 to ngf
+        # 外层逐步减少通道数，同时通过 skip connection 保留浅层空间细节。
         unet_block = UnetSkipConnectionBlock(ngf * 4, ngf * 8, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
         unet_block = UnetSkipConnectionBlock(ngf * 2, ngf * 4, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
         unet_block = UnetSkipConnectionBlock(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer)
@@ -475,28 +520,35 @@ class UnetSkipConnectionBlock(nn.Module):
         super(UnetSkipConnectionBlock, self).__init__()
         self.outermost = outermost
         if type(norm_layer) == functools.partial:
+            # 和 ResnetGenerator 一样，根据 norm 类型决定卷积层是否需要 bias。
             use_bias = norm_layer.func == nn.InstanceNorm2d
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
         if input_nc is None:
             input_nc = outer_nc
+        # 下采样卷积：空间尺寸减半，通道变为 inner_nc。
         downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
         downrelu = nn.LeakyReLU(0.2, True)
         downnorm = norm_layer(inner_nc)
+        # 上采样反卷积：空间尺寸扩大 2 倍，通道变回 outer_nc。
         uprelu = nn.ReLU(True)
         upnorm = norm_layer(outer_nc)
 
         if outermost:
+            # 最外层直接接收原图，最后用 Tanh 输出图像，因此不加 norm。
             upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc, kernel_size=4, stride=2, padding=1)
             down = [downconv]
             up = [uprelu, upconv, nn.Tanh()]
             model = down + [submodule] + up
         elif innermost:
+            # 最内层没有更深的 submodule，也没有 skip 拼接输入导致的通道翻倍。
             upconv = nn.ConvTranspose2d(inner_nc, outer_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
             down = [downrelu, downconv]
             up = [uprelu, upconv, upnorm]
             model = down + up
         else:
+            # 普通中间层：下采样 -> 更内层 submodule -> 上采样。
+            # 因为 U-Net 会 concat skip 特征，上采样输入通道是 inner_nc * 2。
             upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc, kernel_size=4, stride=2, padding=1, bias=use_bias)
             down = [downrelu, downconv, downnorm]
             up = [uprelu, upconv, upnorm]
@@ -510,8 +562,10 @@ class UnetSkipConnectionBlock(nn.Module):
 
     def forward(self, x):
         if self.outermost:
+            # 最外层直接返回最终图像，不再做 skip concat。
             return self.model(x)
         else:  # add skip connections
+            # 非最外层把输入特征和子模块输出在通道维拼接，这就是 U-Net 的跳跃连接。
             return torch.cat([x, self.model(x)], 1)
 
 
@@ -529,24 +583,30 @@ class NLayerDiscriminator(nn.Module):
         """
         super(NLayerDiscriminator, self).__init__()
         if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
+            # BatchNorm 有 affine 参数时卷积 bias 可省；InstanceNorm 无 affine 时保留 bias。
             use_bias = norm_layer.func == nn.InstanceNorm2d
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
 
+        # PatchGAN 使用 4x4 卷积核。输出不是单个真假概率，而是一张真假分数图。
         kw = 4
         padw = 1
+        # 第一层不加 norm，直接从 RGB/输入通道提取局部真假特征。
         sequence = [nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), nn.LeakyReLU(0.2, True)]
         nf_mult = 1
         nf_mult_prev = 1
         for n in range(1, n_layers):  # gradually increase the number of filters
+            # 每层空间尺寸减半，通道数逐步翻倍，最多到 8 * ndf。
             nf_mult_prev = nf_mult
             nf_mult = min(2**n, 8)
             sequence += [nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias), norm_layer(ndf * nf_mult), nn.LeakyReLU(0.2, True)]
 
         nf_mult_prev = nf_mult
         nf_mult = min(2**n_layers, 8)
+        # 倒数第二层 stride=1，不再快速降采样，用于扩大局部感受野。
         sequence += [nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias), norm_layer(ndf * nf_mult), nn.LeakyReLU(0.2, True)]
 
+        # 最后一层输出 1 通道预测图；每个位置对应输入图上的一个局部 patch 真假分数。
         sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
 
@@ -568,10 +628,13 @@ class PixelDiscriminator(nn.Module):
         """
         super(PixelDiscriminator, self).__init__()
         if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
+            # 根据归一化层类型决定卷积 bias。
             use_bias = norm_layer.func == nn.InstanceNorm2d
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
 
+        # PixelDiscriminator 全部使用 1x1 卷积，只判断每个像素位置的通道组合是否真实。
+        # 它不能建模空间纹理结构，因此比 70x70 PatchGAN 约束更弱。
         self.net = [
             nn.Conv2d(input_nc, ndf, kernel_size=1, stride=1, padding=0),
             nn.LeakyReLU(0.2, True),

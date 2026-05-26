@@ -8,10 +8,10 @@ from bs4 import BeautifulSoup
 
 
 class GetData(object):
-    """A Python script for downloading CycleGAN or pix2pix datasets.
+    """A Python script for downloading CycleGAN datasets.
 
     Parameters:
-        technique (str) -- One of: 'cyclegan' or 'pix2pix'.
+        technique (str) -- Only 'cyclegan' is supported in this local project.
         verbose (bool)  -- If True, print additional information.
 
     Examples:
@@ -19,16 +19,13 @@ class GetData(object):
         >>> gd = GetData(technique='cyclegan')
         >>> new_data_path = gd.get(save_path='./datasets')  # options will be displayed.
 
-    Alternatively, You can use bash scripts: 'scripts/download_pix2pix_model.sh'
-    and 'scripts/download_cyclegan_model.sh'.
+    Alternatively, you can use 'scripts/download_cyclegan_model.sh'.
     """
 
     def __init__(self, technique="cyclegan", verbose=True):
-        url_dict = {
-            "pix2pix": "http://efrosgans.eecs.berkeley.edu/pix2pix/datasets/",
-            "cyclegan": "http://efrosgans.eecs.berkeley.edu/pix2pix/datasets",
-        }
-        self.url = url_dict.get(technique.lower())
+        if technique.lower() != "cyclegan":
+            raise ValueError("Only CycleGAN datasets are supported in this local project.")
+        self.url = "http://efrosgans.eecs.berkeley.edu/pix2pix/datasets"
         self._verbose = verbose
 
     def _print(self, text):

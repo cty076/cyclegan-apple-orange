@@ -29,11 +29,17 @@ def find_model_using_name(model_name: str):
     be instantiated. It has to be a subclass of BaseModel,
     and it is case-insensitive.
     """
+    # 根据命令行里的 --model 名称拼出 Python 模块名。
+    # 例如 --model cycle_gan 会对应 models/cycle_gan_model.py。
     model_filename = "models." + model_name + "_model"
+    # 动态导入模型文件。这样新增模型时不需要在这里手动 import。
     modellib = importlib.import_module(model_filename)
     model = None
+    # 约定类名格式：cycle_gan -> CycleGANModel；test -> TestModel。
+    # 这里统一转成小写比较，因此类名大小写不敏感。
     target_model_name = model_name.replace("_", "") + "model"
     for name, cls in modellib.__dict__.items():
+        # 只接受继承 BaseModel 的类，避免误把普通变量/函数当成模型类。
         if name.lower() == target_model_name.lower() and issubclass(cls, BaseModel):
             model = cls
 
@@ -46,13 +52,17 @@ def find_model_using_name(model_name: str):
 
 def get_option_setter(model_name: str):
     """Return the static method <modify_commandline_options> of the model class."""
+    # 先找到模型类，再取它的静态方法 modify_commandline_options。
+    # options/base_options.py 会调用这个方法，让不同模型能追加自己的命令行参数。
     model_class = find_model_using_name(model_name)
     return model_class.modify_commandline_options
 
 
 def create_model(opt):
     """Create a model given the option."""
+    # 训练/测试入口都会调用这里。opt.model 决定创建哪个模型类。
     model = find_model_using_name(opt.model)
+    # 实例化模型；具体网络、loss、optimizer 通常在模型类的 __init__ 里创建。
     instance = model(opt)
     print(f"model [{type(instance).__name__}] was created")
     return instance

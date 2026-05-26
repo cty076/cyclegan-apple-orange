@@ -1,4 +1,4 @@
-"""General-purpose test script for image-to-image translation.
+"""Test script for CycleGAN image-to-image translation.
 
 Once you have trained your model with train.py, you can use this script to test the model.
 It will load a saved model from '--checkpoints_dir' and save the results to '--results_dir'.
@@ -19,12 +19,9 @@ Example (You need to train models first or download pre-trained models from our 
     which is sometimes unnecessary. The results will be saved at ./results/.
     Use '--results_dir <directory_path_to_save_result>' to specify the results directory.
 
-    Test a pix2pix model:
-        python test.py --dataroot ./datasets/facades --name facades_pix2pix --model pix2pix --direction BtoA
-
 See options/base_options.py and options/test_options.py for more test options.
-See training and test tips at: https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/docs/tips.md
-See frequently asked questions at: https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/blob/master/docs/qa.md
+See training and test tips in docs/tips.md.
+See frequently asked questions in docs/qa.md.
 """
 
 import os
@@ -62,8 +59,7 @@ if __name__ == "__main__":
     print(f"creating web directory {web_dir}")
     webpage = html.HTML(web_dir, f"Experiment = {opt.name}, Phase = {opt.phase}, Epoch = {opt.epoch}")
     # test with eval mode. This only affects layers like batchnorm and dropout.
-    # For [pix2pix]: we use batchnorm and dropout in the original pix2pix. You can experiment it with and without eval() mode.
-    # For [CycleGAN]: It should not affect CycleGAN as CycleGAN uses instancenorm without dropout.
+    # Eval mode should not affect the default CycleGAN setup, which uses instancenorm without dropout.
     if opt.eval:
         model.eval()
     for i, data in enumerate(dataset):
